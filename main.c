@@ -1,7 +1,14 @@
+#define _GNU_SOURCE
+
+#include <errno.h>
+#include <sched.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <sys/mount.h>
+#include <sys/stat.h>
 #include <termios.h>
+#include <unistd.h>
 
 const int MAX_X = 80;
 const int MAX_Y = 40;
@@ -17,6 +24,119 @@ void clearAndReset() {
   printf("\x1b[H");
   // Clear the screen
   printf("\x1b[J");
+}
+
+int containerize() {
+	int uid = getuid();
+	int gid = getgid();
+
+	if(unshare(CLONE_NEWUSER) != 0) {
+		printf("Failed to unshare user namespace!\n");
+		return -1;
+	}
+
+	int fd = open("/proc/self/setgroups", O_WRONLY);
+	if(fd < 0) {
+		printf("Failed to open setgroups!\n");
+		return -1;
+	}
+	if(write(fd, "deny", 4) < 0) {
+		printf("Failed to write setgroups! %d\n", errno);
+		close(fd);
+		return -1;
+	}
+	close(fd);
+
+	char buf[100];
+	snprintf(buf, sizeof(buf), "0 %d 1\n", uid);
+	fd = open("/proc/self/uid_map", O_WRONLY);
+	if(fd < 0) {
+		printf("Failed to open uid_map!\n");
+		return -1;
+	}
+	if(write(fd, buf, strlen(buf)) < 0) {
+			printf("Failed to write uid_map!\n");
+			close(fd);
+			return -1;
+	}
+	close(fd);
+
+	snprintf(buf, sizeof(buf), "0 %d 1\n", gid);
+	fd = open("/proc/self/gid_map", O_WRONLY);
+	if(fd < 0) {
+		printf("Failed to open gid_map!\n");
+		return -1;
+	}
+	if(write(fd, buf, strlen(buf)) < 0) {
+			printf("Failed to write gid_map!\n");
+			close(fd);
+			return -1;
+	}
+	close(fd);
+
+	if(unshare(CLONE_NEWNS) < 0) {
+		printf("Failed to unshare mount namespace!");
+		return -1;
+	}
+	
+	// Make our directory structure in tmp
+	mkdir("/tmp/bashgeonrt", 0700);
+	mkdir("/tmp/bashgeonrt/bin", 0700);
+	mkdir("/tmp/bashgeonrt/lib", 0700);
+	mkdir("/tmp/bashgeonrt/lib64", 0700);
+	mkdir("/tmp/bashgeonrt/usr", 0700);
+	mkdir("/tmp/bashgeonrt/usr/bin", 0700);
+	mkdir("/tmp/bashgeonrt/usr/lib", 0700);
+	mkdir("/tmp/bashgeonrt/home", 0700);
+
+	if(mount(NULL, "/", NULL, MS_REC | MS_PRIVATE, NULL) < 0) {
+		printf("Mount root failed: %d\n", errno);
+		return -1;
+	}
+	
+	if(mount("/bin", "/tmp/bashgeonrt/bin", NULL, 
+				MS_BIND | MS_REC | MS_RDONLY, NULL) < 0) {
+		printf("Mount bin failed: %d\n", errno);
+		return -1;
+	}
+
+	if(mount("/lib", "/tmp/bashgeonrt/lib", NULL,
+				MS_BIND | MS_REC | MS_RDONLY, NULL) < 0) {
+		printf("Mount lib failed: %d\n", errno);
+		return -1;
+	}
+
+	if(mount("/lib64", "/tmp/bashgeonrt/lib64", NULL,
+				MS_BIND | MS_REC | MS_RDONLY, NULL)< 0) {
+		printf("Mount lib64 failed: %d\n", errno);
+		return -1;
+	}
+
+	if(mount("/usr/bin", "/tmp/bashgeonrt/usr/bin", NULL, 
+				MS_BIND | MS_REC | MS_RDONLY, NULL) < 0) {
+		printf("Mount usr/bin failed: %d\n", errno);
+		return -1;
+	}
+
+	if(mount("/usr/lib", "/tmp/bashgeonrt/usr/lib", NULL,
+				MS_BIND | MS_REC | MS_RDONLY, NULL) < 0) {
+		printf("Mount usr/lib failed: %d\n", errno);
+		return -1;
+	}
+
+	if(mount("/tmp/bashgeonrt", "/tmp/bashgeonrt", NULL,
+			MS_BIND | MS_REC, NULL) < 0) {
+		printf("Mount tmprt failed: %d\n", errno);
+		return -1;
+	}
+	
+	if(chroot("/tmp/bashgeonrt") != 0) {
+		printf("chroot failed :(, %d\n", errno);
+		return -1;
+	}
+	chdir("/");
+
+	return 0;
 }
 
 void makeBox(int minX, int minY, int maxX, int maxY) {
@@ -176,6 +296,12 @@ int main() {
   clearAndReset();
 	printf("\x1b[=19h");
 
+	int err = containerize();
+	if(err != 0) {
+		printf("Failed to create a \"safe\" execution environment!\n");
+		return -1;
+	}
+
   struct termios noEcho, withEcho;
   tcgetattr(stdin->_fileno, &noEcho);
   tcgetattr(stdin->_fileno, &withEcho);
@@ -199,4 +325,5 @@ int main() {
 
   tcsetattr(stdin->_fileno, TCSANOW, &withEcho);
   clearAndReset();
+	return 0;
 }
