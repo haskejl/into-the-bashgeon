@@ -39,9 +39,9 @@ void prologue(struct termios *withEcho, struct termios *noEcho) {
 		}
 	}
 
-  int playerX = 0;
-  int playerY = 0;
-  unsigned char action = '\0';
+	int playerX = 0;
+	int playerY = 0;
+	unsigned char action = '\0';
 	unsigned char goalStr[] = "PS1='\\u \\W \\$ '";
 
 	printf("\x1b[2;2HWelcome to the Bashgeon! I need some help, but only had a few seconds");
