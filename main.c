@@ -60,7 +60,7 @@ void prologue(struct termios *withEcho, struct termios *noEcho) {
 
 	printf("\x1b[%d;3H COMMAND ", MAX_Y-1);
 
-  while(1) {
+	while(1) {
 		printf("\x1b[%d;%dH", playerY+12, playerX+2);
 		action = getchar();
 		if(currMode == COMMAND) {
@@ -152,7 +152,7 @@ void prologue(struct termios *withEcho, struct termios *noEcho) {
 			printf("%s", &tileChars[0][0]);
 			break;
 		}
-  }
+	}
 
 	printf("\x1b[0m");
 	printf("\x1b[2;2H\x1b[2KFantastic! I knew you could do it. Now, let's save this file and");
