@@ -1,12 +1,16 @@
 #define _GNU_SOURCE
 
 #include <errno.h>
+#include <fcntl.h>
+#include <pty.h>
 #include <sched.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 #include <sys/mount.h>
+#include <sys/select.h>
 #include <sys/stat.h>
+#include <sys/wait.h>
 #include <termios.h>
 #include <unistd.h>
 
@@ -82,12 +86,19 @@ int containerize() {
 	// Make our directory structure in tmp
 	mkdir("/tmp/bashgeonrt", 0700);
 	mkdir("/tmp/bashgeonrt/bin", 0700);
+	mkdir("/tmp/bashgeonrt/dev", 0755);
+	mkdir("/tmp/bashgeonrt/dev/pts", 0755);
+	mkdir("/tmp/bashgeonrt/home", 0700);
 	mkdir("/tmp/bashgeonrt/lib", 0700);
 	mkdir("/tmp/bashgeonrt/lib64", 0700);
+	//mkdir("/tmp/bashgeonrt/proc", 0700);
 	mkdir("/tmp/bashgeonrt/usr", 0700);
 	mkdir("/tmp/bashgeonrt/usr/bin", 0700);
 	mkdir("/tmp/bashgeonrt/usr/lib", 0700);
-	mkdir("/tmp/bashgeonrt/home", 0700);
+
+	fd = open("/tmp/bashgeonrt/dev/ptmx", O_CREAT);
+	close(fd);
+	chmod("/tmp/bashgeonrt/dev/ptmx", 0666);
 
 	if(mount(NULL, "/", NULL, MS_REC | MS_PRIVATE, NULL) < 0) {
 		printf("Mount root failed: %d\n", errno);
@@ -97,6 +108,29 @@ int containerize() {
 	if(mount("/bin", "/tmp/bashgeonrt/bin", NULL, 
 				MS_BIND | MS_REC | MS_RDONLY, NULL) < 0) {
 		printf("Mount bin failed: %d\n", errno);
+		return -1;
+	}
+
+	/*if(mount("/dev/ptmx", "/tmp/bashgeonrt/dev/ptmx", NULL,
+				MS_BIND, NULL) < 0) {
+		perror("bind ptmx");
+		return -1;
+	}
+
+	if(mount("devpts", "/tmp/bashgeonrt/dev/pts", "devpts",
+				0, "newinstance,ptmxmode=0666,mode=620") < 0) {
+		perror("devpts");
+		return -1;
+	}*/
+	if(mount("/dev", "/tmp/bashgeonrt/dev", NULL,
+				MS_BIND | MS_REC, NULL) < 0) {
+		perror("mount dev");
+		return -1;
+	}
+
+	if(mount("/home", "/tmp/bashgeonrt/home", "tmpfs",
+				0, "size=2M") < 0) {
+		perror("mount_home");
 		return -1;
 	}
 
@@ -111,6 +145,12 @@ int containerize() {
 		printf("Mount lib64 failed: %d\n", errno);
 		return -1;
 	}
+
+	/*if(mount("/proc", "/tmp/bashgeonrt/proc", "proc",
+				MS_BIND | MS_REC, NULL) < 0) {
+		printf("Mount proc failed: %d\n", errno);
+		return -1;
+	}*/
 
 	if(mount("/usr/bin", "/tmp/bashgeonrt/usr/bin", NULL, 
 				MS_BIND | MS_REC | MS_RDONLY, NULL) < 0) {
@@ -277,7 +317,7 @@ void prologue(struct termios *withEcho, struct termios *noEcho) {
 	printf("\x1b[0m");
 	printf("\x1b[2;2H\x1b[2KFantastic! I knew you could do it. Now, let's save this file and");
 	printf("\x1b[3;2H\x1b[2Kget outta here with the following sequence:");
-	printf("\x1b[4;2H\x1b[2K<esc>:wq");
+	printf("\x1b[4;2H\x1b[2K:wq");
 	printf("\x1b[%d;%dH", playerY+12, playerX+2);
 	
 	while(action != ':') action = getchar();
@@ -292,6 +332,70 @@ void prologue(struct termios *withEcho, struct termios *noEcho) {
 	while(action != '\n') action = getchar();
 }
 
+int levelOne(struct termios *raw) {
+	FILE *fp;
+	fp = fopen("/home/.bashrc", "w");
+	if(fp == NULL) {
+		perror("bashrc");
+		return -1;
+	}
+	char ps1[] = "PS1='\\u \\W \\$ '\n";
+	
+	fputs(ps1, fp);
+	fclose(fp);
+	
+	printf("Congrats, you made it. It's kinda hard to tell where you are though.\n");
+	printf("Remember that file you were working on. It's here somewhere.\n");
+	printf("Use the command we learned earlier to LiSt the files.\n");
+	printf("Hint: Try using the flags -l -a, and -A.\n");
+	printf("\n");
+	printf("When you find it, try source [filename].\n");
+
+  tcsetattr(STDIN_FILENO, TCSANOW, raw);
+
+	int masterFd;
+	pid_t pid = forkpty(&masterFd, NULL, NULL, NULL);
+
+	if(pid < 0) {
+		perror("forkpty");
+		printf("error: %d\n", errno);
+		return -1;
+	}
+
+	if(pid == 0) {
+		execlp("bash", "bash", NULL);
+		perror("execl");
+		return -1;
+	}
+
+	while(1) {
+		fd_set fds;
+		FD_ZERO(&fds);
+		FD_SET(STDIN_FILENO, &fds);
+		FD_SET(masterFd, &fds);
+
+		int maxFd = (masterFd > STDIN_FILENO ? masterFd : STDIN_FILENO);
+
+		select(maxFd + 1, &fds, NULL, NULL, NULL);
+
+		if(FD_ISSET(masterFd, &fds)) {
+			char buffer[1024];
+			int n = read(masterFd, buffer, sizeof(buffer));
+			if(n <= 0) break;
+			write(STDOUT_FILENO, buffer, n);
+		}
+		if(FD_ISSET(STDIN_FILENO, &fds)) {
+			char c;
+			if(read(STDIN_FILENO, &c, 1) > 0)
+				write(masterFd, &c, 1);
+		}
+	}
+
+	waitpid(pid, NULL, 0);
+
+	return 0;
+}
+
 int main() {
   clearAndReset();
 	printf("\x1b[=19h");
@@ -302,26 +406,28 @@ int main() {
 		return -1;
 	}
 
-  struct termios noEcho, withEcho;
-  tcgetattr(stdin->_fileno, &noEcho);
-  tcgetattr(stdin->_fileno, &withEcho);
+  struct termios noEcho, withEcho, raw;
+  tcgetattr(STDIN_FILENO, &noEcho);
+  tcgetattr(STDIN_FILENO, &withEcho);
   noEcho.c_lflag &= ~(ICANON | ECHO);
-  tcsetattr(stdin->_fileno, TCSANOW, &noEcho);
+	cfmakeraw(&raw);
+  tcsetattr(STDIN_FILENO, TCSANOW, &noEcho);
 
 	// Prologue will be optional later
   prologue(&withEcho, &noEcho);
 	clearAndReset();
-	printf("Yay! You did it!\n");
-	printf("user@localhost / $ ");
-  tcsetattr(stdin->_fileno, TCSANOW, &withEcho);
+	printf("I knew you could do it! Welcome to The Construct.\n");
+	printf("Try using ls to look at what's here.\n");
 
-	while(1) {
+	levelOne(&raw);
+
+	/*while(1) {
 		char cmd[50] = "";
 		fgets(cmd, 50, stdin);
 		if(strcmp(cmd, "exit\n") == 0) break;
 		system(cmd);
 		printf("user@localhost / $ ");
-	}
+	}*/
 
   tcsetattr(stdin->_fileno, TCSANOW, &withEcho);
   clearAndReset();
