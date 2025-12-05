@@ -92,6 +92,7 @@ int containerize() {
 	mkdir("/tmp/bashgeonrt/lib", 0700);
 	mkdir("/tmp/bashgeonrt/lib64", 0700);
 	//mkdir("/tmp/bashgeonrt/proc", 0700);
+	mkdir("/tmp/bashgeonrt/tmp", 0700);
 	mkdir("/tmp/bashgeonrt/usr", 0700);
 	mkdir("/tmp/bashgeonrt/usr/bin", 0700);
 	mkdir("/tmp/bashgeonrt/usr/lib", 0700);
@@ -99,6 +100,14 @@ int containerize() {
 	fd = open("/tmp/bashgeonrt/dev/ptmx", O_CREAT);
 	close(fd);
 	chmod("/tmp/bashgeonrt/dev/ptmx", 0666);
+	
+	fd = open("/tmp/bashgeonrt/dev/null", O_CREAT);
+	if(fd < 0) {
+		printf("Failed to create /dev/null, %d\n", errno);
+		return -1;
+	}
+	close(fd);
+	chmod("/tmp/bashgeonrt/dev/null", 0666);
 
 	if(mount(NULL, "/", NULL, MS_REC | MS_PRIVATE, NULL) < 0) {
 		printf("Mount root failed: %d\n", errno);
@@ -128,6 +137,12 @@ int containerize() {
 		return -1;
 	}
 
+	if(mount("/dev/null", "/tmp/bashgeonrt/dev/null", NULL,
+				MS_BIND, NULL) < 0) {
+		printf("Failed to mount /dev/null\n");
+		return -1;
+	}
+
 	if(mount("/home", "/tmp/bashgeonrt/home", "tmpfs",
 				0, "size=2M") < 0) {
 		perror("mount_home");
@@ -151,6 +166,12 @@ int containerize() {
 		printf("Mount proc failed: %d\n", errno);
 		return -1;
 	}*/
+
+	if(mount("/tmp", "/tmp/bashgeonrt/tmp", "tmpfs",
+				0, "size=2M") < 0) {
+		perror("mount_tmp");
+		return -1;
+	}
 
 	if(mount("/usr/bin", "/tmp/bashgeonrt/usr/bin", NULL, 
 				MS_BIND | MS_REC | MS_RDONLY, NULL) < 0) {
@@ -202,7 +223,7 @@ void prologue(struct termios *withEcho, struct termios *noEcho) {
 	int playerX = 0;
 	int playerY = 0;
 	unsigned char action = '\0';
-	unsigned char goalStr[] = "PS1='\\u \\W \\$ '";
+	unsigned char goalStr[] = "PS1='\\w \\$ '";
 
 	printf("\x1b[2;2HWelcome to the Bashgeon! I need some help, but only had a few seconds");
 	printf("\x1b[3;2Hto salvage some commands.");
@@ -215,7 +236,7 @@ void prologue(struct termios *withEcho, struct termios *noEcho) {
 
 	makeBox(1, 11, MAX_X, MAX_Y-1);
 
-	strncpy(&tileChars[0][0], "\\U V S N", strlen("\\U V S N"));
+	strncpy(&tileChars[0][0], "PS1='\\W'", strlen("PS1='\\W'"));
 	printf("\x1b[12;2H%s", &tileChars[0][0]);
 
 	printf("\x1b[%d;3H COMMAND ", MAX_Y-1);
@@ -339,17 +360,26 @@ int levelOne(struct termios *raw) {
 		perror("bashrc");
 		return -1;
 	}
-	char ps1[] = "PS1='\\u \\W \\$ '\n";
+	char ps1[] = "PS1='\\w \\$ '\necho 'hey'\n\
+								echo \"PS1='\\w \\$ '\">/home/.bashrc";
 	
 	fputs(ps1, fp);
+	fclose(fp);
+
+	fp = fopen("/tmp/inject.sh", "w");
+	if(fp == NULL) {
+		perror("l1_inj");
+		return -1;
+	}
+	fprintf(fp, "cd /home");
 	fclose(fp);
 	
 	printf("Congrats, you made it. It's kinda hard to tell where you are though.\n");
 	printf("Remember that file you were working on. It's here somewhere.\n");
-	printf("Use the command we learned earlier to LiSt the files.\n");
-	printf("Hint: Try using the flags -l -a, and -A.\n");
+	printf("Use the command we learned earlier to List the files.\n");
+	printf("Hint: Try using the flags -l -a, and -A (combined -la or -lA).\n");
 	printf("\n");
-	printf("When you find it, try source [filename].\n");
+	printf("When you find it, try source [filename].\n\n");
 
   tcsetattr(STDIN_FILENO, TCSANOW, raw);
 
@@ -363,9 +393,9 @@ int levelOne(struct termios *raw) {
 	}
 
 	if(pid == 0) {
-		execlp("bash", "bash", NULL);
+		execlp("bash", "bash", "--rcfile", "/tmp/inject.sh", NULL);
 		perror("execl");
-		return -1;
+		_exit(1);
 	}
 
 	while(1) {
@@ -382,6 +412,7 @@ int levelOne(struct termios *raw) {
 			char buffer[1024];
 			int n = read(masterFd, buffer, sizeof(buffer));
 			if(n <= 0) break;
+
 			write(STDOUT_FILENO, buffer, n);
 		}
 		if(FD_ISSET(STDIN_FILENO, &fds)) {
@@ -414,14 +445,18 @@ int main() {
   tcsetattr(STDIN_FILENO, TCSANOW, &noEcho);
 
 	// Prologue will be optional later
-  prologue(&withEcho, &noEcho);
+  //prologue(&withEcho, &noEcho);
 	clearAndReset();
+
+	levelOne(&raw);
+	
+	clearAndReset();
+	tcsetattr(STDIN_FILENO, TCSANOW, &withEcho);
 	printf("I knew you could do it! Welcome to The Construct.\n");
 	printf("Try using ls to look at what's here.\n");
 
-	levelOne(&raw);
-
-	/*while(1) {
+	/*printf("user@localhost / $ ");
+	while(1) {
 		char cmd[50] = "";
 		fgets(cmd, 50, stdin);
 		if(strcmp(cmd, "exit\n") == 0) break;
