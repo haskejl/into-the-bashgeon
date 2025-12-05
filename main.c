@@ -366,12 +366,29 @@ int levelOne(struct termios *raw) {
 	fputs(ps1, fp);
 	fclose(fp);
 
+	fp = fopen("/home/.bash_history", "w");
+	if(fp == NULL) {
+		perror("bashhistory");
+		return -1;
+	}
+	fclose(fp);
+
 	fp = fopen("/tmp/inject.sh", "w");
 	if(fp == NULL) {
 		perror("l1_inj");
 		return -1;
 	}
-	fprintf(fp, "cd /home");
+	fprintf(fp, "cd /home\n\
+		export HISTFILE=/home/.bash_history\n\
+		real_source() {\n\
+			builtin source \"$@\"\n\
+		}\n\
+		source() {\n\
+			echo \"$(date) Sourced $1\" >> /home/test.txt\n\
+			real_source \"$@\"\n\
+		}\n\
+		readonly -f source\n\
+		readonly -f real_source ");
 	fclose(fp);
 	
 	printf("Congrats, you made it. It's kinda hard to tell where you are though.\n");
@@ -452,8 +469,6 @@ int main() {
 	
 	clearAndReset();
 	tcsetattr(STDIN_FILENO, TCSANOW, &withEcho);
-	printf("I knew you could do it! Welcome to The Construct.\n");
-	printf("Try using ls to look at what's here.\n");
 
 	/*printf("user@localhost / $ ");
 	while(1) {
