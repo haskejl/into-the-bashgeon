@@ -397,6 +397,11 @@ int levelOne(struct termios *raw) {
 	printf("Hint: Try using the flags -l -a, and -A (combined -la or -lA).\n");
 	printf("\n");
 	printf("When you find it, try source [filename].\n\n");
+	// Set scrolling region
+	printf("\x1b[10;20r");
+	// Move the cursor to row 10 col 0
+	printf("\x1b[10;2H");
+	fflush(stdout);
 
   tcsetattr(STDIN_FILENO, TCSANOW, raw);
 
@@ -414,6 +419,8 @@ int levelOne(struct termios *raw) {
 		perror("execl");
 		_exit(1);
 	}
+
+	//int temp = 0;
 
 	while(1) {
 		fd_set fds;
@@ -437,6 +444,10 @@ int levelOne(struct termios *raw) {
 			if(read(STDIN_FILENO, &c, 1) > 0)
 				write(masterFd, &c, 1);
 		}
+		/*if(temp == 0) {
+			write(STDOUT_FILENO, "\x1b[2K", 5);
+			temp++;
+		}*/
 	}
 
 	waitpid(pid, NULL, 0);
