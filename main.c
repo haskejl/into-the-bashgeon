@@ -1,7 +1,7 @@
 #define _GNU_SOURCE
 
 #include <errno.h>
-#include <fcntl.h>
+//#include <fcntl.h>
 #include <pty.h>
 #include <sched.h>
 #include <stdio.h>
@@ -15,17 +15,36 @@
 #include <unistd.h>
 
 enum GameMode {
-	BASH, MAP
+	BASH, MAP, STORY
 };
 
-enum Mode {
-	INSERT, COMMAND
+struct MapTileFormat {
+	char format[16];
+	int yPos;
+	int xPos;
 };
 
 const int MAX_X = 80;
 const int MAX_Y = 20;
+const int MAP_MAX_X = 40;
 
 enum GameMode GM = BASH;
+
+int playerX = 0;
+int playerY = 0;
+
+char l1map[4][8] = {"....esc",
+									"..k....",
+									".h.l...",
+									"..j..>."};
+struct MapTileFormat l1format[5] = {{"\x1b[0m", 0, 0},
+																		{"\x1b[38;5;4m", 0, 4},
+																		{"\x1b[0m", 1, 0},
+																		{"\x1b[38;5;4m", 3, 5},
+																		{"\x1b[0m", 3, 6}};
+int l1rows = 4;
+int l1cols = 8;
+int l1formats = 5;
 
 void clearAndReset() {
   // Reset all colors
@@ -139,12 +158,6 @@ int containerize() {
 		return -1;
 	}
 
-	/*if(mount("/proc", "/tmp/bashgeonrt/proc", "proc",
-				MS_BIND | MS_REC, NULL) < 0) {
-		printf("Mount proc failed: %d\n", errno);
-		return -1;
-	}*/
-
 	if(mount("/tmp", "/tmp/bashgeonrt/tmp", "tmpfs",
 				0, "size=2M") < 0) {
 		perror("mount_tmp");
@@ -190,6 +203,11 @@ int containerize() {
 	fprintf(fp, "\n\
 		export PS1='\\w $ '\n\
 		export HISTFILE=/home/.bash_history\n\
+		cd() {\n\
+		  builtin cd \"$@\"\n\
+		  pwd > /home/.wd\n\
+			echo -n \"\x1b[1F\x1b[0K\"\n\
+		}\n\
 		source() {\n\
 			builtin source \"$@\"\n\
 			export PS1='\\w $ '\n\
@@ -211,145 +229,64 @@ void makeBox(int minX, int minY, int maxX, int maxY) {
 	}
 }
 
-void drawMap(const char tileChars[MAX_Y][MAX_X]) {
-	for(int y=0; y<MAX_Y; y++) {
-		printf("\x1b[%d;1H%s", y+1, &tileChars[y][0]);
+void drawSplits() {
+	printf("\x1b[%d;1H\x1b[9m\x1b[38;5;8m", MAX_Y);
+	for(int x=0; x<MAX_X; x++) {
+		printf(" ");
 	}
+	printf("\x1b[29m");
+	for(int y=0; y<MAX_Y; y++) {
+		printf("\x1b[%d;%dH|", y, MAP_MAX_X);
+	}
+	printf("\x1b[0m");
 }
 
-void handleMapInput(char tileChars[MAX_Y][MAX_X]) {
-	enum Mode currMode = COMMAND;
-	int playerX = 0;
-	int playerY = 0;
+void handleMapInput(char tileChars[MAX_Y][MAP_MAX_X]) {
 	unsigned char action = '\0';
-	char goalStr[] = "abc";
 
 	while(1) {
 		printf("\x1b[%d;%dH", playerY+1, playerX+1);
 		action = getchar();
-		if(currMode == COMMAND) {
-			switch(action) {
-				// Deletion
-				/*case 'x':
-					printf("\x1b[0K");
-					for(int x=playerX; x<MAX_X-2 && tileChars[playerY][x] != '\0'; x++) {
-						tileChars[playerY][x] = tileChars[playerY][x+1];
-						printf("%c", tileChars[playerY][x]);
-					}
-					printf("\x1b[%d;%dH|", playerY+1, MAX_X);
-					if(tileChars[playerY][playerX] == '\0' && playerX != 0) playerX--;
-					printf("\x1b[%d;%dH", playerY+1, playerX+2);
-					break;
-					
-				// Enter insert mode
-				case 'a':
-					if(playerX < MAX_X-1 && tileChars[playerY][playerX] != '\0') {
-						playerX++;
-					}
-					currMode = INSERT;
-					printf("\x1b[%d;4HINSERT -", MAX_Y-1);
-					break;
-				case 'i':
-					currMode = INSERT;
-					printf("\x1b[%d;4HINSERT -", MAX_Y-1);
-					break;*/
+		switch(action) {
+			case '\x1b':
+				GM = BASH;
+				printf("\x1b[u");
+				fflush(stdout);
+				return;
 
-				case '\x1b':
-					GM = BASH;
-					printf("\x1b[u");
-					fflush(stdout);
-					return;
-
-				// Movement
-				case 'h':
-					if(playerX > 0) playerX--;
-					break;
-				case 'j':
-					if(playerY < MAX_Y-2 && tileChars[playerY+1][0] != '\0') {
-						int tmpX = 0;
-						while(tileChars[playerY+1][tmpX+1] != '\0') tmpX++;
-						if(playerX > tmpX) playerX = tmpX;
-						playerY++;
-					}
-					break;
-				case 'k':
-					if(playerY > 0) {
-						int tmpX = 0;
-						while(tileChars[playerY-1][tmpX+1] != '\0') tmpX++;
-						if(playerX > tmpX) playerX = tmpX;
-						playerY--;
-					}
-					break;
-				case 'l':
-					if(playerX < MAX_X-1 && tileChars[playerY][playerX+1] != '\0') playerX++;
-			}
-		}
-		/*else {
-			// Find rightmost character
-			int rightChar = playerX;
-			while(tileChars[playerY][rightChar] != '\0') rightChar++;
-
-			// Type
-			while(action != 0x1B) {
-				if(rightChar < MAX_X-2 && action >= 0x20 && action <= 0x7E) {
-					for(int x=rightChar+1; x>playerX; x--) {
-						tileChars[playerY][x] = tileChars[playerY][x-1];
-					}
-					tileChars[playerY][playerX] = action;
-					printf("\x1b[0K%s", &tileChars[playerY][playerX]);
-					printf("\x1b[%d;%dH|", playerY+1, MAX_X);
-					playerX++;
-					printf("\x1b[%d;%dH", playerY+1, playerX+1);
-					rightChar++;
-					if(strcmp(&tileChars[0][0], goalStr) == 0) {
-						printf("\x1b[7;2H\x1b[1mGOAL: \x1b[32m%s", goalStr);
-						printf("\x1b[%d;%dH", playerY+1, 2);
-						printf("%s", &tileChars[0][0]);
-						break;
-					}
+			// Movement
+			case 'h':
+				if(playerX > 0) playerX--;
+				break;
+			case 'j':
+				if(playerY < MAX_Y-2 && tileChars[playerY+1][0] != '\0') {
+					int tmpX = 0;
+					while(tileChars[playerY+1][tmpX+1] != '\0') tmpX++;
+					if(playerX > tmpX) playerX = tmpX;
+					playerY++;
 				}
-				action = getchar();
-			}
-			if(tileChars[playerY][playerX] == '\0' && playerX != 0) playerX--;
-
-			// Enter Command Mode
-			currMode = COMMAND;
-			printf("\x1b[%d;4HCOMMAND ", MAX_Y-1);
+				break;
+			case 'k':
+				if(playerY > 0) {
+					int tmpX = 0;
+					while(tileChars[playerY-1][tmpX+1] != '\0') tmpX++;
+					if(playerX > tmpX) playerX = tmpX;
+					playerY--;
+				}
+				break;
+			case 'l':
+				if(playerX < MAP_MAX_X-1 && 
+						tileChars[playerY][playerX+1] != '\0') playerX++;
 		}
-		if(strcmp(&tileChars[0][0], goalStr) == 0) {
-			printf("\x1b[7;2H\x1b[1mGOAL: \x1b[32m%s", goalStr);
-			printf("\x1b[%d;%dH", playerY+12, 2);
-			printf("%s", &tileChars[0][0]);
-			break;
-		}*/
 	}
-
-	printf("\x1b[0m");
-	printf("\x1b[2;2H\x1b[2KFantastic! I knew you could do it. Now, let's save this file and");
-	printf("\x1b[3;2H\x1b[2Kget outta here with the following sequence:");
-	printf("\x1b[4;2H\x1b[2K:wq");
-	printf("\x1b[%d;%dH", playerY+12, playerX+2);
-	
-	while(action != ':') action = getchar();
-	printf("\x1b[%d;1H:", MAX_Y);
-
-	while(action != 'w') action = getchar();
-	printf("\x1b[%d;2Hw", MAX_Y);
-
-	while(action != 'q') action = getchar();
-	printf("\x1b[%d;3Hq", MAX_Y);
-
-	while(action != '\n') action = getchar();
 }
 
-int makePty(struct termios *raw, pid_t *pid) {
+int makePty(pid_t *pid) {
 	// Set scrolling region
 	printf("\x1b[21;45r");
 	// Move the cursor to row 10 col 0
 	printf("\x1b[21;1H");
 	fflush(stdout);
-
-  tcsetattr(STDIN_FILENO, TCSANOW, raw);
 
 	int masterFd;
 	*pid = forkpty(&masterFd, NULL, NULL, NULL);
@@ -393,11 +330,32 @@ int handleBashInput(int masterFd) {
 			char c;
 			if(read(STDIN_FILENO, &c, 1) > 0) {
 				if(c == '\x1b') {
-					GM = MAP;
-					printf("\x1b[s");
-					return 1;
+					struct timeval timeout = {0, 20};
+					char seq[16];
+					seq[0] = c;
+					int seqLen = 1;
+
+					for(int i=1; i<16; i++) {
+						FD_ZERO(&fds);
+						FD_SET(STDIN_FILENO, &fds);
+
+						if(select(STDIN_FILENO+1, &fds, NULL, NULL, &timeout) < 1) break;
+
+						read(STDIN_FILENO, &seq[i], 1);
+						seqLen++;
+
+						if(seq[i] >= '@' && seq[i] <= '~') break;
+					}
+					if(seqLen == 1) {
+						GM = MAP;
+						printf("\x1b[s");
+						return 1;
+					}
+					write(masterFd, seq, seqLen);
 				}
-				write(masterFd, &c, 1);
+				else {
+					write(masterFd, &c, 1);
+				}
 			}
 		}
 	}
@@ -415,39 +373,46 @@ int main() {
 		return -1;
 	}
 	
-  struct termios noEcho, withEcho, raw;
-  tcgetattr(STDIN_FILENO, &noEcho);
-  tcgetattr(STDIN_FILENO, &withEcho);
-  noEcho.c_lflag &= ~(ICANON | ECHO);
-	cfmakeraw(&raw);
-	tcsetattr(STDIN_FILENO, TCSANOW, &noEcho);
+  struct termios normalTerm, rawTerm;
+  tcgetattr(STDIN_FILENO, &normalTerm);
+	cfmakeraw(&rawTerm);
+  tcsetattr(STDIN_FILENO, TCSANOW, &rawTerm);
+
 
 	pid_t ptyPid;
-	char map[MAX_Y][MAX_X];
+	char map[MAX_Y][MAP_MAX_X];
 	for(int y=0; y<MAX_Y; y++) {
-		for(int x=0; x<MAX_X; x++) {
+		for(int x=0; x<MAP_MAX_X; x++) {
 			map[y][x] = '\0';
 		}
 	}
-	strncpy(&map[0][0], ".....", 5);
-	strncpy(&map[1][0], "...>.", 5);
-	strncpy(&map[2][0], ".....", 5);
+	//TODO: Read levels from files
+	int formatPos = 0;
+	for(int y=0; y<l1rows; y++) {
+		for(int x=0; x<l1cols; x++) {
+			if(formatPos < l1formats) {
+				if(l1format[formatPos].yPos == y && 
+						l1format[formatPos].xPos == x) {
+					printf("%s", l1format[formatPos].format);
+					formatPos++;
+				}
+			}
+			printf("%c", l1map[y][x]);
+		}
+		printf("\x1b[1E");
+		strncpy(&map[y][0], &l1map[y][0], strlen(&l1map[y][0]));
+	}
 
-	// Init Level
-	drawMap(map);
-	int ptyFd = makePty(&raw, &ptyPid);
+	drawSplits();
+	int ptyFd = makePty(&ptyPid);
 	printf("\x1b[s");
 	fflush(stdout);
 
 	while(1) {
-		//handle map input
 		if(GM == MAP) {
-			tcsetattr(STDIN_FILENO, TCSANOW, &noEcho);
 			handleMapInput(map);
 		}
-		//handle bash input
 		if(GM == BASH) {
-			tcsetattr(STDIN_FILENO, TCSANOW, &raw);
 			int bashRet =  handleBashInput(ptyFd);
 			if(bashRet == 0) break;
 		}
@@ -455,9 +420,8 @@ int main() {
 
 	waitpid(ptyPid, NULL, 0);
 
-	tcsetattr(STDIN_FILENO, TCSANOW, &withEcho);
+	tcsetattr(STDIN_FILENO, TCSANOW, &normalTerm);
 
-  tcsetattr(stdin->_fileno, TCSANOW, &withEcho);
   clearAndReset();
 	return 0;
 }
