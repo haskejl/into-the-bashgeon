@@ -85,7 +85,7 @@ int containerize() {
 	
 	// Make our directory structure in tmp
 	mkdir("/tmp/bashgeonrt", 0700);
-	mkdir("/tmp/bashgeonrt/bin", 0700);
+	mkdir("/tmp/bashgeonrt/bin", 0755);
 	mkdir("/tmp/bashgeonrt/dev", 0755);
 	mkdir("/tmp/bashgeonrt/dev/pts", 0755);
 	mkdir("/tmp/bashgeonrt/home", 0700);
@@ -211,7 +211,7 @@ void makeBox(int minX, int minY, int maxX, int maxY) {
 	}
 }
 
-void prologue(struct termios *withEcho, struct termios *noEcho) {
+void createMap(struct termios *withEcho, struct termios *noEcho) {
 	enum Mode currMode = COMMAND;
 	char tileChars[MAX_Y-10][MAX_X-1];
 	for(int y=0; y<MAX_Y-10; y++) {
@@ -353,75 +353,34 @@ void prologue(struct termios *withEcho, struct termios *noEcho) {
 	while(action != '\n') action = getchar();
 }
 
-int levelOne(struct termios *raw) {
-	FILE *fp;
-	fp = fopen("/home/.bashrc", "w");
-	if(fp == NULL) {
-		perror("bashrc");
-		return -1;
-	}
-	char ps1[] = "PS1='\\w \\$ '\necho 'hey'\n\
-								echo \"PS1='\\w \\$ '\">/home/.bashrc";
-	
-	fputs(ps1, fp);
-	fclose(fp);
-
-	fp = fopen("/home/.bash_history", "w");
-	if(fp == NULL) {
-		perror("bashhistory");
-		return -1;
-	}
-	fclose(fp);
-
-	fp = fopen("/tmp/inject.sh", "w");
-	if(fp == NULL) {
-		perror("l1_inj");
-		return -1;
-	}
-	fprintf(fp, "cd /home\n\
-		export HISTFILE=/home/.bash_history\n\
-		real_source() {\n\
-			builtin source \"$@\"\n\
-		}\n\
-		source() {\n\
-			echo \"$(date) Sourced $1\" >> /home/test.txt\n\
-			real_source \"$@\"\n\
-		}\n\
-		readonly -f source\n\
-		readonly -f real_source ");
-	fclose(fp);
-	
-	printf("Congrats, you made it. It's kinda hard to tell where you are though.\n");
-	printf("Remember that file you were working on. It's here somewhere.\n");
-	printf("Use the command we learned earlier to List the files.\n");
-	printf("Hint: Try using the flags -l -a, and -A (combined -la or -lA).\n");
-	printf("\n");
-	printf("When you find it, try source [filename].\n\n");
+int makePty(struct termios *raw, pid_t *pid) {
 	// Set scrolling region
-	printf("\x1b[10;20r");
+	printf("\x1b[21;45r");
 	// Move the cursor to row 10 col 0
-	printf("\x1b[10;2H");
+	printf("\x1b[21;1H");
 	fflush(stdout);
 
   tcsetattr(STDIN_FILENO, TCSANOW, raw);
 
 	int masterFd;
-	pid_t pid = forkpty(&masterFd, NULL, NULL, NULL);
+	*pid = forkpty(&masterFd, NULL, NULL, NULL);
 
-	if(pid < 0) {
+	if(*pid < 0) {
 		perror("forkpty");
 		printf("error: %d\n", errno);
 		return -1;
 	}
 
-	if(pid == 0) {
+	if(*pid == 0) {
 		execlp("bash", "bash", "--rcfile", "/tmp/inject.sh", NULL);
 		perror("execl");
 		_exit(1);
 	}
 
-	//int temp = 0;
+	return masterFd;
+}
 
+int handleBashInput(int masterFd) {
 	while(1) {
 		fd_set fds;
 		FD_ZERO(&fds);
@@ -444,13 +403,7 @@ int levelOne(struct termios *raw) {
 			if(read(STDIN_FILENO, &c, 1) > 0)
 				write(masterFd, &c, 1);
 		}
-		/*if(temp == 0) {
-			write(STDOUT_FILENO, "\x1b[2K", 5);
-			temp++;
-		}*/
 	}
-
-	waitpid(pid, NULL, 0);
 
 	return 0;
 }
@@ -464,7 +417,35 @@ int main() {
 		printf("Failed to create a \"safe\" execution environment!\n");
 		return -1;
 	}
+	FILE *fp = fopen("/home/.bash_history", "w");
+	if(fp == NULL) {
+		perror("bashhistory");
+		return -1;
+	}
+	fclose(fp);
 
+	fp = fopen("/tmp/inject.sh", "w");
+	if(fp == NULL) {
+		perror("l1_inj");
+		return -1;
+	}
+	fprintf(fp, "cd /home\n\
+		export HISTFILE=/home/.bash_history\n\
+		ls() {\n\
+		  echo \"ls called\" > /home/test.txt\n\
+			/bin/ls \"$@\"\n\
+		}\n\
+		real_source() {\n\
+			builtin source \"$@\"\n\
+		}\n\
+		source() {\n\
+			echo \"$(date) Sourced $1\" >> /home/test.txt\n\
+			real_source \"$@\"\n\
+		}\n\
+		readonly -f source\n\
+		readonly -f real_source ");
+	fclose(fp);
+	
   struct termios noEcho, withEcho, raw;
   tcgetattr(STDIN_FILENO, &noEcho);
   tcgetattr(STDIN_FILENO, &withEcho);
@@ -476,19 +457,21 @@ int main() {
   //prologue(&withEcho, &noEcho);
 	clearAndReset();
 
-	levelOne(&raw);
-	
-	clearAndReset();
-	tcsetattr(STDIN_FILENO, TCSANOW, &withEcho);
+	pid_t ptyPid;
 
-	/*printf("user@localhost / $ ");
+	// Init Level
+	int ptyFd = makePty(&raw, &ptyPid);
+
 	while(1) {
-		char cmd[50] = "";
-		fgets(cmd, 50, stdin);
-		if(strcmp(cmd, "exit\n") == 0) break;
-		system(cmd);
-		printf("user@localhost / $ ");
-	}*/
+		//handle user input
+		//handle bash input
+		int bashRet =  handleBashInput(ptyFd);
+		if(bashRet == 0) break;
+	}
+
+	waitpid(ptyPid, NULL, 0);
+
+	tcsetattr(STDIN_FILENO, TCSANOW, &withEcho);
 
   tcsetattr(stdin->_fileno, TCSANOW, &withEcho);
   clearAndReset();
