@@ -1,18 +1,14 @@
 #define _GNU_SOURCE
 
 #include <errno.h>
-//#include <fcntl.h>
 #include <pty.h>
 #include <sched.h>
 #include <stdio.h>
-#include <stdlib.h>
 #include <string.h>
 #include <sys/mount.h>
 #include <sys/select.h>
 #include <sys/stat.h>
 #include <sys/wait.h>
-#include <termios.h>
-#include <unistd.h>
 
 enum GameMode {
 	BASH, MAP, STORY
@@ -117,7 +113,6 @@ int containerize() {
 	mkdir("/tmp/bashgeonrt/home", 0700);
 	mkdir("/tmp/bashgeonrt/lib", 0700);
 	mkdir("/tmp/bashgeonrt/lib64", 0700);
-	//mkdir("/tmp/bashgeonrt/proc", 0700);
 	mkdir("/tmp/bashgeonrt/tmp", 0700);
 	mkdir("/tmp/bashgeonrt/usr", 0700);
 	mkdir("/tmp/bashgeonrt/usr/bin", 0700);
@@ -188,6 +183,8 @@ int containerize() {
 	}
 	chdir("/entrance");
 
+	mkdir("/entrance/empty_room", 0700);
+
 	FILE *fp = fopen("/home/.bash_history", "w");
 	if(fp == NULL) {
 		perror("bashhistory");
@@ -206,7 +203,6 @@ int containerize() {
 		cd() {\n\
 		  builtin cd \"$@\"\n\
 		  pwd > /home/.wd\n\
-			echo -n \"\x1b[1F\x1b[0K\"\n\
 		}\n\
 		source() {\n\
 			builtin source \"$@\"\n\
