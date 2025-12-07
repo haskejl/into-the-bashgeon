@@ -24,6 +24,9 @@ const int MAX_X = 80;
 const int MAX_Y = 20;
 const int MAP_MAX_X = 40;
 
+int uid;
+int gid;
+
 enum GameMode GM = BASH;
 
 int playerX = 0;
@@ -52,64 +55,24 @@ void clearAndReset() {
 }
 
 int containerize() {
-	int uid = getuid();
-	int gid = getgid();
-
-	if(unshare(CLONE_NEWUSER) != 0) {
-		printf("Failed to unshare user namespace!\n");
-		return -1;
-	}
-
-	int fd = open("/proc/self/setgroups", O_WRONLY);
-	if(fd < 0) {
-		printf("Failed to open setgroups!\n");
-		return -1;
-	}
-	if(write(fd, "deny", 4) < 0) {
-		printf("Failed to write setgroups! %d\n", errno);
-		close(fd);
-		return -1;
-	}
-	close(fd);
-
-	char buf[100];
-	snprintf(buf, sizeof(buf), "0 %d 1\n", uid);
-	fd = open("/proc/self/uid_map", O_WRONLY);
-	if(fd < 0) {
-		printf("Failed to open uid_map!\n");
-		return -1;
-	}
-	if(write(fd, buf, strlen(buf)) < 0) {
-			printf("Failed to write uid_map!\n");
-			close(fd);
-			return -1;
-	}
-	close(fd);
-
-	snprintf(buf, sizeof(buf), "0 %d 1\n", gid);
-	fd = open("/proc/self/gid_map", O_WRONLY);
-	if(fd < 0) {
-		printf("Failed to open gid_map!\n");
-		return -1;
-	}
-	if(write(fd, buf, strlen(buf)) < 0) {
-			printf("Failed to write gid_map!\n");
-			close(fd);
-			return -1;
-	}
-	close(fd);
-
 	if(unshare(CLONE_NEWNS) < 0) {
-		printf("Failed to unshare mount namespace!");
+		perror("CLONE_NEWNS");
 		return -1;
 	}
+
+	int fd = open("/proc/self/ns/user", O_RDONLY);
+	if(fd < 0) perror("open user ns");
+
+	struct mount_attr attr = {0};
+	attr.userns_fd = fd;
+	attr.attr_set = MOUNT_ATTR_IDMAP;
 	
 	// Make our directory structure in tmp
 	mkdir("/tmp/bashgeonrt", 0700);
 	mkdir("/tmp/bashgeonrt/bin", 0755);
 	mkdir("/tmp/bashgeonrt/dev", 0755);
 	mkdir("/tmp/bashgeonrt/dev/pts", 0755);
-	mkdir("/tmp/bashgeonrt/entrance", 0700);
+	mkdir("/tmp/bashgeonrt/entrance", 0755);
 	mkdir("/tmp/bashgeonrt/home", 0700);
 	mkdir("/tmp/bashgeonrt/lib", 0700);
 	mkdir("/tmp/bashgeonrt/lib64", 0700);
@@ -117,6 +80,7 @@ int containerize() {
 	mkdir("/tmp/bashgeonrt/usr", 0700);
 	mkdir("/tmp/bashgeonrt/usr/bin", 0700);
 	mkdir("/tmp/bashgeonrt/usr/lib", 0700);
+
 
 	if(mount(NULL, "/", NULL, MS_REC | MS_PRIVATE, NULL) < 0) {
 		printf("Mount root failed: %d\n", errno);
@@ -132,6 +96,12 @@ int containerize() {
 	if(mount("/dev", "/tmp/bashgeonrt/dev", NULL,
 				MS_BIND | MS_REC, NULL) < 0) {
 		perror("mount dev");
+		return -1;
+	}
+
+	if(mount("none", "/tmp/bashgeonrt/entrance", "tmpfs",
+				0, "size=2M") < 0) {
+		perror("mount_entrance");
 		return -1;
 	}
 
@@ -181,9 +151,12 @@ int containerize() {
 		printf("chroot failed :(, %d\n", errno);
 		return -1;
 	}
+
 	chdir("/entrance");
 
 	mkdir("/entrance/empty_room", 0700);
+	mkdir("/entrance/test", 0000);
+	chmod("/entrance/test", 0000);
 
 	FILE *fp = fopen("/home/.bash_history", "w");
 	if(fp == NULL) {
@@ -294,10 +267,73 @@ int makePty(pid_t *pid) {
 	}
 
 	if(*pid == 0) {
+		if(unshare(CLONE_NEWUSER) != 0) {
+			perror("CLONE_NEWUSER");
+			return -1;
+		}
+
+		kill(getpid(), SIGSTOP);
+
+		int err = containerize();
+		if(err != 0) {
+			printf("Failed to create a \"safe\" execution environment!\n");
+			return -1;
+		}
+
 		execlp("bash", "bash", "--rcfile", "/tmp/inject.sh", NULL);
 		perror("execl");
 		_exit(1);
 	}
+	
+	int status;
+	waitpid(*pid, &status, WUNTRACED);
+	while(!WIFSTOPPED(status));
+
+	char filename[100];
+	sprintf(filename, "/proc/%d/setgroups", *pid);
+	int fd = open(filename, O_WRONLY);
+	if(fd < 0) {
+		perror("Osetgroups");
+		printf("Failed to open setgroups! %d\n", *pid);
+		return -1;
+	}
+	if(write(fd, "deny", 4) < 0) {
+		printf("Failed to write setgroups! %d\n", errno);
+		close(fd);
+		return -1;
+	}
+	close(fd);
+
+	char buf[100];
+	sprintf(filename, "/proc/%d/uid_map", *pid);
+	snprintf(buf, sizeof(buf), "8309 %d 1\n", uid);
+	fd = open(filename, O_WRONLY);
+	if(fd < 0) {
+		printf("Failed to open uid_map!\n");
+		return -1;
+	}
+	if(write(fd, buf, strlen(buf)) < 0) {
+			printf("Failed to write uid_map!\n");
+			close(fd);
+			return -1;
+	}
+	close(fd);
+
+	sprintf(filename, "/proc/%d/gid_map", *pid);
+	snprintf(buf, sizeof(buf), "0 %d 1\n", gid);
+	fd = open(filename, O_WRONLY);
+	if(fd < 0) {
+		printf("Failed to open gid_map!\n");
+		return -1;
+	}
+	if(write(fd, buf, strlen(buf)) < 0) {
+			printf("Failed to write gid_map!\n");
+			close(fd);
+			return -1;
+	}
+	close(fd);
+
+	kill(*pid, SIGCONT);
 
 	return masterFd;
 }
@@ -326,6 +362,7 @@ int handleBashInput(int masterFd) {
 			char c;
 			if(read(STDIN_FILENO, &c, 1) > 0) {
 				if(c == '\x1b') {
+					chmod("/tmp/bashgeonrt/entrance/test", 0700);
 					struct timeval timeout = {0, 20};
 					char seq[16];
 					seq[0] = c;
@@ -363,11 +400,9 @@ int main() {
   clearAndReset();
 	printf("\x1b[=19h");
 
-	int err = containerize();
-	if(err != 0) {
-		printf("Failed to create a \"safe\" execution environment!\n");
-		return -1;
-	}
+	uid = getuid();
+	gid = getgid();
+
 	
   struct termios normalTerm, rawTerm;
   tcgetattr(STDIN_FILENO, &normalTerm);
