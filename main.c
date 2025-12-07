@@ -14,12 +14,18 @@
 #include <termios.h>
 #include <unistd.h>
 
-const int MAX_X = 80;
-const int MAX_Y = 40;
+enum GameMode {
+	BASH, MAP
+};
 
 enum Mode {
 	INSERT, COMMAND
 };
+
+const int MAX_X = 80;
+const int MAX_Y = 20;
+
+enum GameMode GM = BASH;
 
 void clearAndReset() {
   // Reset all colors
@@ -88,6 +94,7 @@ int containerize() {
 	mkdir("/tmp/bashgeonrt/bin", 0755);
 	mkdir("/tmp/bashgeonrt/dev", 0755);
 	mkdir("/tmp/bashgeonrt/dev/pts", 0755);
+	mkdir("/tmp/bashgeonrt/entrance", 0700);
 	mkdir("/tmp/bashgeonrt/home", 0700);
 	mkdir("/tmp/bashgeonrt/lib", 0700);
 	mkdir("/tmp/bashgeonrt/lib64", 0700);
@@ -96,18 +103,6 @@ int containerize() {
 	mkdir("/tmp/bashgeonrt/usr", 0700);
 	mkdir("/tmp/bashgeonrt/usr/bin", 0700);
 	mkdir("/tmp/bashgeonrt/usr/lib", 0700);
-
-	fd = open("/tmp/bashgeonrt/dev/ptmx", O_CREAT);
-	close(fd);
-	chmod("/tmp/bashgeonrt/dev/ptmx", 0666);
-	
-	fd = open("/tmp/bashgeonrt/dev/null", O_CREAT);
-	if(fd < 0) {
-		printf("Failed to create /dev/null, %d\n", errno);
-		return -1;
-	}
-	close(fd);
-	chmod("/tmp/bashgeonrt/dev/null", 0666);
 
 	if(mount(NULL, "/", NULL, MS_REC | MS_PRIVATE, NULL) < 0) {
 		printf("Mount root failed: %d\n", errno);
@@ -120,30 +115,13 @@ int containerize() {
 		return -1;
 	}
 
-	/*if(mount("/dev/ptmx", "/tmp/bashgeonrt/dev/ptmx", NULL,
-				MS_BIND, NULL) < 0) {
-		perror("bind ptmx");
-		return -1;
-	}
-
-	if(mount("devpts", "/tmp/bashgeonrt/dev/pts", "devpts",
-				0, "newinstance,ptmxmode=0666,mode=620") < 0) {
-		perror("devpts");
-		return -1;
-	}*/
 	if(mount("/dev", "/tmp/bashgeonrt/dev", NULL,
 				MS_BIND | MS_REC, NULL) < 0) {
 		perror("mount dev");
 		return -1;
 	}
 
-	if(mount("/dev/null", "/tmp/bashgeonrt/dev/null", NULL,
-				MS_BIND, NULL) < 0) {
-		printf("Failed to mount /dev/null\n");
-		return -1;
-	}
-
-	if(mount("/home", "/tmp/bashgeonrt/home", "tmpfs",
+	if(mount("none", "/tmp/bashgeonrt/home", "tmpfs",
 				0, "size=2M") < 0) {
 		perror("mount_home");
 		return -1;
@@ -195,7 +173,29 @@ int containerize() {
 		printf("chroot failed :(, %d\n", errno);
 		return -1;
 	}
-	chdir("/");
+	chdir("/entrance");
+
+	FILE *fp = fopen("/home/.bash_history", "w");
+	if(fp == NULL) {
+		perror("bashhistory");
+		return -1;
+	}
+	fclose(fp);
+
+	fp = fopen("/tmp/inject.sh", "w");
+	if(fp == NULL) {
+		perror("l1_inj");
+		return -1;
+	}
+	fprintf(fp, "\n\
+		export PS1='\\w $ '\n\
+		export HISTFILE=/home/.bash_history\n\
+		source() {\n\
+			builtin source \"$@\"\n\
+			export PS1='\\w $ '\n\
+		}\n\
+		readonly -f source ");
+	fclose(fp);
 
 	return 0;
 }
@@ -211,51 +211,34 @@ void makeBox(int minX, int minY, int maxX, int maxY) {
 	}
 }
 
-void createMap(struct termios *withEcho, struct termios *noEcho) {
-	enum Mode currMode = COMMAND;
-	char tileChars[MAX_Y-10][MAX_X-1];
-	for(int y=0; y<MAX_Y-10; y++) {
-		for(int x=0; x<MAX_X-1; x++) {
-			tileChars[y][x] = '\0';
-		}
+void drawMap(const char tileChars[MAX_Y][MAX_X]) {
+	for(int y=0; y<MAX_Y; y++) {
+		printf("\x1b[%d;1H%s", y+1, &tileChars[y][0]);
 	}
+}
 
+void handleMapInput(char tileChars[MAX_Y][MAX_X]) {
+	enum Mode currMode = COMMAND;
 	int playerX = 0;
 	int playerY = 0;
 	unsigned char action = '\0';
-	unsigned char goalStr[] = "PS1='\\w \\$ '";
-
-	printf("\x1b[2;2HWelcome to the Bashgeon! I need some help, but only had a few seconds");
-	printf("\x1b[3;2Hto salvage some commands.");
-	printf("\x1b[4;2HTry using the keys I was able to salvage a,h,i,l,x,<esc> to produce the phrase.");
-
-	makeBox(1, 6, MAX_X, 8);
-	printf("\x1b[7;2H\x1b[1mGOAL: \x1b[22m%s", goalStr);
-
-	printf("\x1b[10;2HEditing: .bashrc");
-
-	makeBox(1, 11, MAX_X, MAX_Y-1);
-
-	strncpy(&tileChars[0][0], "PS1='\\W'", strlen("PS1='\\W'"));
-	printf("\x1b[12;2H%s", &tileChars[0][0]);
-
-	printf("\x1b[%d;3H COMMAND ", MAX_Y-1);
+	char goalStr[] = "abc";
 
 	while(1) {
-		printf("\x1b[%d;%dH", playerY+12, playerX+2);
+		printf("\x1b[%d;%dH", playerY+1, playerX+1);
 		action = getchar();
 		if(currMode == COMMAND) {
 			switch(action) {
 				// Deletion
-				case 'x':
+				/*case 'x':
 					printf("\x1b[0K");
 					for(int x=playerX; x<MAX_X-2 && tileChars[playerY][x] != '\0'; x++) {
 						tileChars[playerY][x] = tileChars[playerY][x+1];
 						printf("%c", tileChars[playerY][x]);
 					}
-					printf("\x1b[%d;%dH|", playerY+12, MAX_X);
+					printf("\x1b[%d;%dH|", playerY+1, MAX_X);
 					if(tileChars[playerY][playerX] == '\0' && playerX != 0) playerX--;
-					printf("\x1b[%d;%dH", playerY+12, playerX+2);
+					printf("\x1b[%d;%dH", playerY+1, playerX+2);
 					break;
 					
 				// Enter insert mode
@@ -269,7 +252,13 @@ void createMap(struct termios *withEcho, struct termios *noEcho) {
 				case 'i':
 					currMode = INSERT;
 					printf("\x1b[%d;4HINSERT -", MAX_Y-1);
-					break;
+					break;*/
+
+				case '\x1b':
+					GM = BASH;
+					printf("\x1b[u");
+					fflush(stdout);
+					return;
 
 				// Movement
 				case 'h':
@@ -295,7 +284,7 @@ void createMap(struct termios *withEcho, struct termios *noEcho) {
 					if(playerX < MAX_X-1 && tileChars[playerY][playerX+1] != '\0') playerX++;
 			}
 		}
-		else {
+		/*else {
 			// Find rightmost character
 			int rightChar = playerX;
 			while(tileChars[playerY][rightChar] != '\0') rightChar++;
@@ -308,13 +297,13 @@ void createMap(struct termios *withEcho, struct termios *noEcho) {
 					}
 					tileChars[playerY][playerX] = action;
 					printf("\x1b[0K%s", &tileChars[playerY][playerX]);
-					printf("\x1b[%d;%dH|", playerY+12, MAX_X);
+					printf("\x1b[%d;%dH|", playerY+1, MAX_X);
 					playerX++;
-					printf("\x1b[%d;%dH", playerY+12, playerX+2);
+					printf("\x1b[%d;%dH", playerY+1, playerX+1);
 					rightChar++;
 					if(strcmp(&tileChars[0][0], goalStr) == 0) {
 						printf("\x1b[7;2H\x1b[1mGOAL: \x1b[32m%s", goalStr);
-						printf("\x1b[%d;%dH", playerY+12, 2);
+						printf("\x1b[%d;%dH", playerY+1, 2);
 						printf("%s", &tileChars[0][0]);
 						break;
 					}
@@ -332,7 +321,7 @@ void createMap(struct termios *withEcho, struct termios *noEcho) {
 			printf("\x1b[%d;%dH", playerY+12, 2);
 			printf("%s", &tileChars[0][0]);
 			break;
-		}
+		}*/
 	}
 
 	printf("\x1b[0m");
@@ -381,6 +370,8 @@ int makePty(struct termios *raw, pid_t *pid) {
 }
 
 int handleBashInput(int masterFd) {
+	// 30ms frame time
+	struct timeval tv = {0, 30000};
 	while(1) {
 		fd_set fds;
 		FD_ZERO(&fds);
@@ -389,7 +380,7 @@ int handleBashInput(int masterFd) {
 
 		int maxFd = (masterFd > STDIN_FILENO ? masterFd : STDIN_FILENO);
 
-		select(maxFd + 1, &fds, NULL, NULL, NULL);
+		select(maxFd + 1, &fds, NULL, NULL, &tv);
 
 		if(FD_ISSET(masterFd, &fds)) {
 			char buffer[1024];
@@ -400,8 +391,14 @@ int handleBashInput(int masterFd) {
 		}
 		if(FD_ISSET(STDIN_FILENO, &fds)) {
 			char c;
-			if(read(STDIN_FILENO, &c, 1) > 0)
+			if(read(STDIN_FILENO, &c, 1) > 0) {
+				if(c == '\x1b') {
+					GM = MAP;
+					printf("\x1b[s");
+					return 1;
+				}
 				write(masterFd, &c, 1);
+			}
 		}
 	}
 
@@ -417,56 +414,43 @@ int main() {
 		printf("Failed to create a \"safe\" execution environment!\n");
 		return -1;
 	}
-	FILE *fp = fopen("/home/.bash_history", "w");
-	if(fp == NULL) {
-		perror("bashhistory");
-		return -1;
-	}
-	fclose(fp);
-
-	fp = fopen("/tmp/inject.sh", "w");
-	if(fp == NULL) {
-		perror("l1_inj");
-		return -1;
-	}
-	fprintf(fp, "cd /home\n\
-		export HISTFILE=/home/.bash_history\n\
-		ls() {\n\
-		  echo \"ls called\" > /home/test.txt\n\
-			/bin/ls \"$@\"\n\
-		}\n\
-		real_source() {\n\
-			builtin source \"$@\"\n\
-		}\n\
-		source() {\n\
-			echo \"$(date) Sourced $1\" >> /home/test.txt\n\
-			real_source \"$@\"\n\
-		}\n\
-		readonly -f source\n\
-		readonly -f real_source ");
-	fclose(fp);
 	
   struct termios noEcho, withEcho, raw;
   tcgetattr(STDIN_FILENO, &noEcho);
   tcgetattr(STDIN_FILENO, &withEcho);
   noEcho.c_lflag &= ~(ICANON | ECHO);
 	cfmakeraw(&raw);
-  tcsetattr(STDIN_FILENO, TCSANOW, &noEcho);
-
-	// Prologue will be optional later
-  //prologue(&withEcho, &noEcho);
-	clearAndReset();
+	tcsetattr(STDIN_FILENO, TCSANOW, &noEcho);
 
 	pid_t ptyPid;
+	char map[MAX_Y][MAX_X];
+	for(int y=0; y<MAX_Y; y++) {
+		for(int x=0; x<MAX_X; x++) {
+			map[y][x] = '\0';
+		}
+	}
+	strncpy(&map[0][0], ".....", 5);
+	strncpy(&map[1][0], "...>.", 5);
+	strncpy(&map[2][0], ".....", 5);
 
 	// Init Level
+	drawMap(map);
 	int ptyFd = makePty(&raw, &ptyPid);
+	printf("\x1b[s");
+	fflush(stdout);
 
 	while(1) {
-		//handle user input
+		//handle map input
+		if(GM == MAP) {
+			tcsetattr(STDIN_FILENO, TCSANOW, &noEcho);
+			handleMapInput(map);
+		}
 		//handle bash input
-		int bashRet =  handleBashInput(ptyFd);
-		if(bashRet == 0) break;
+		if(GM == BASH) {
+			tcsetattr(STDIN_FILENO, TCSANOW, &raw);
+			int bashRet =  handleBashInput(ptyFd);
+			if(bashRet == 0) break;
+		}
 	}
 
 	waitpid(ptyPid, NULL, 0);
