@@ -63,10 +63,6 @@ int containerize() {
 	int fd = open("/proc/self/ns/user", O_RDONLY);
 	if(fd < 0) perror("open user ns");
 
-	struct mount_attr attr = {0};
-	attr.userns_fd = fd;
-	attr.attr_set = MOUNT_ATTR_IDMAP;
-	
 	// Make our directory structure in tmp
 	mkdir("/tmp/bashgeonrt", 0700);
 	mkdir("/tmp/bashgeonrt/bin", 0755);
